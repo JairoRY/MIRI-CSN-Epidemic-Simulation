@@ -65,13 +65,19 @@ df_eigen <- lapply(names(networks), function(name) {
   )
 }) %>% bind_rows() %>% arrange(desc(Lambda1))
 
-print(kable(df_eigen))
+latex_code <- kable(
+    df_eigen, 
+    format = "latex", 
+    digits = 3,
+    booktabs = TRUE,
+    row.names = FALSE
+  )
+cat(latex_code, sep = "\n")
 ```
 
 # Task 1: Spread
 
 ```{r}
-N_runs_task1 <- 30
 df_task1 <- lapply(names(networks), function(net_name) {
   history <- simulate_sis_vec(networks[[net_name]], p0, beta, gamma, time_steps)
   data.frame(
@@ -85,7 +91,6 @@ p1 <- ggplot(df_task1, aes(x = Time, y = Prevalence, color = Network)) +
   geom_line(size = 1) +
   scale_color_brewer(palette = "Set1") +
   labs(
-    title = "SIS Epidemic Spread by Topology",
     y = "Proportion Infected",
     x = "Time Step"
   ) +
@@ -101,6 +106,17 @@ p1 <- ggplot(df_task1, aes(x = Time, y = Prevalence, color = Network)) +
     legend.position = "bottom"
   )
 print(p1)
+
+ggsave(
+    filename = "spreading.pdf",
+    plot = p1,
+    device = "pdf",
+    width = 10,
+    height = 7,
+    units = "in",
+    dpi = 600,     
+    limitsize = FALSE
+)
 ```
 
 ```{r}
@@ -122,13 +138,20 @@ results_sweep <- lapply(names(networks), function(net_name) {
   }) %>% bind_rows()
 }) %>% bind_rows()
 
+ordered_networks <- df_eigen$Network
+results_sweep$Network <- factor(results_sweep$Network, levels = ordered_networks)
+df_eigen$Network <- factor(df_eigen$Network, levels = ordered_networks)
+
 p_sweep <- ggplot(results_sweep, aes(x = Beta, y = Prevalence)) +
   geom_boxplot(aes(fill = Network, group = Beta), 
                outlier.shape = 21, outlier.size = 1.5, 
-               outlier.alpha = 0.6, lwd = 0.4, width = 0.008, color = "gray20") +
+               outlier.alpha = 0.6, lwd = 0.4, width = 0.008, 
+               show.legend = FALSE, color = "gray20") +
   
-  geom_vline(data = df_eigen, aes(xintercept = Threshold_Beta), 
-             linetype = "dashed", color = "red", size = 0.8, alpha = 0.8) +
+  geom_vline(data = df_eigen, 
+             aes(xintercept = Threshold_Beta, linetype = "Spectral Threshold (1/Lambda1)"), 
+             color = "red", size = 0.8, alpha = 0.8) +
+  scale_linetype_manual(name = "", values = c("Spectral Threshold (1/Lambda1)" = "dashed")) +
   
   facet_wrap(~Network, ncol = 3) +
   scale_fill_brewer(palette = "Set1") +
@@ -145,32 +168,52 @@ p_sweep <- ggplot(results_sweep, aes(x = Beta, y = Prevalence)) +
     strip.text = element_text(face = "bold", size = 10),
     axis.title.x = element_text(margin = margin(t = 10), face = "bold"),
     axis.title.y = element_text(margin = margin(r = 10), face = "bold"),
-    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 9),
+    axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1, size = 9),
     panel.grid.minor = element_blank(),
     panel.grid.major.x = element_blank(),
     panel.border = element_rect(color = "black", fill = NA, size = 0.5),
-    legend.position = "none"
+    legend.position = c(0.85, 0.25),legend.text = element_text(size = 9)
   )
 
 print(p_sweep)
+
+ggsave(
+    filename = "beta_evolution.pdf",
+    plot = p_sweep,
+    device = "pdf",
+    width = 10,
+    height = 7,
+    units = "in",
+    dpi = 600,     
+    limitsize = FALSE
+)
 ```
 
 
 
 
 ```{r}
+N_runs_task2 <- 50
+
 df_task2 <- lapply(names(networks), function(name) {
   beta_c <- df_eigen$Threshold_Beta[df_eigen$Network == name]
   
   b_low  <- beta_c * 0.90
-  b_high <- min(beta_c * 1.3, 1.0) 
+  b_high <- beta_c * 1.3 
   
-  sim_low  <- simulate_sis_vec(networks[[name]], p0, b_low, gamma, time_steps)
-  sim_high <- simulate_sis_vec(networks[[name]], p0, b_high, gamma, time_steps)
-  
-  bind_rows(
-    data.frame(Time = 1:time_steps, Prevalence = sim_low,  Type = "Below Threshold (0.9x)"),
-    data.frame(Time = 1:time_steps, Prevalence = sim_high, Type = "Above Threshold (1.3x)")
+  mat_low <- replicate(N_runs_task2, simulate_sis_vec(networks[[name]], p0, b_low, gamma, time_steps))
+
+  mat_high <- replicate(N_runs_task2, simulate_sis_vec(networks[[name]], p0, b_high, gamma, time_steps))
+
+bind_rows(
+    data.frame(
+      Time = 1:time_steps, Type = "Below Threshold (0.9x)",
+      Prevalence = rowMeans(mat_low), SD = apply(mat_low, 1, sd)
+    ),
+    data.frame(
+      Time = 1:time_steps, Type = "Above Threshold (1.3x)",
+      Prevalence = rowMeans(mat_high), SD = apply(mat_high, 1, sd)
+    )
   ) %>% mutate(
     Network = name,
     Label = paste0(name, "\nThresh ~ ", beta_c)
@@ -181,7 +224,10 @@ df_task2 <- lapply(names(networks), function(name) {
 ordered_labels <- unique(df_task2$Label[order(match(df_task2$Network, df_eigen$Network))])
 df_task2$Label <- factor(df_task2$Label, levels = ordered_labels)
 
-p2 <- ggplot(df_task2, aes(x = Time, y = Prevalence, color = Type)) +
+p2 <- ggplot(df_task2, aes(x = Time, y = Prevalence, color = Type, fill = Type)) +
+  geom_ribbon(aes(ymin = pmax(0, Prevalence - SD), 
+                  ymax = pmin(1, Prevalence + SD)), 
+              alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(size = 1) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   facet_wrap(~Label, scales = "free_y", ncol = 3) +
@@ -196,14 +242,26 @@ p2 <- ggplot(df_task2, aes(x = Time, y = Prevalence, color = Type)) +
     
     axis.title.x = element_text(margin = margin(t = 10), face = "bold"),
     axis.title.y = element_text(margin = margin(r = 10), face = "bold"),
-    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 9),
+    axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 1, size = 9),
     
     panel.grid.minor = element_blank(),
     panel.grid.major.x = element_blank(), 
     panel.border = element_rect(color = "black", fill = NA, size = 0.5),
-    legend.position = "bottom"
+    legend.position = c(0.85, 0.25), legend.text = element_text(size = 9)
+
   )
 
 print(p2)
+
+ggsave(
+    filename = "threshold.pdf",
+    plot = p2,
+    device = "pdf",
+    width = 10,
+    height = 7,
+    units = "in",
+    dpi = 600,     
+    limitsize = FALSE
+)
 
 ```
